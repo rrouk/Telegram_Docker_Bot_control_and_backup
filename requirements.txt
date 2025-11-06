@@ -1,0 +1,6 @@
+python-telegram-bot
+python-dotenv
+pycryptodome
+docker
+APScheduler>=3.10.0
+pytz

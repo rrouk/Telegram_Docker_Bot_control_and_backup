@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  dockerbot:
+    build: .
+    container_name: docker-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+
+    volumes:
+      # Монтирование Docker Socket для управления контейнерами (требует RW)
+      - /var/run/docker.sock:/var/run/docker.sock
+      
+      # Монтирование папки для логов (требует RW)
+      - ./logs:/app/logs
+      
+      # !!! КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Добавление :ro для режима только для чтения
+      - /usr/local/bin/GIT:/app/data_to_archive:ro
+
+
+    deploy:
+      resources:
+        limits:
+          memory: 150M
