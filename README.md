@@ -43,3 +43,7 @@
     # Использование docker-compose (рекомендуется)
     docker-compose up --build -d
     ```
+
+## Расшифровка архивов
+
+Расшифровать полученные архивы можно програмой из этого репозитория: https://github.com/rrouk/AES-GCM_Secure_Encryptor
