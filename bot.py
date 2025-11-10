@@ -136,6 +136,64 @@ class DockerBot:
 
 
     # --- Docker-функции (не изменены) ---
+    # остановка всех контейнеров
+    async def stop_all_containers(self):
+        if not self.docker_client:
+            return False
+
+        try:
+            containers = self.docker_client.containers.list(all=True)
+
+            for container in containers:
+                # не останавливаем контейнер бота
+                if container.name in ["docker-bot", "tg_docker_bot"]:
+                    logging.info(f"⏭ Пропуск контейнера бота: {container.name}")
+                    continue
+
+                logging.info(f"⛔ Остановка: {container.name}")
+                try:
+                    container.stop()
+                except Exception as e:
+                    logging.error(f"Ошибка при остановке {container.name}: {e}")
+
+                await asyncio.sleep(1)
+
+            return True
+
+        except Exception as e:
+            logging.error(f"Критическая ошибка stop_all: {e}")
+            return False
+
+    # запуск всех контейнеров
+    async def start_all_containers(self):
+        if not self.docker_client:
+            return False
+
+        try:
+            containers = self.docker_client.containers.list(all=True)
+
+            for container in containers:
+                if container.name in ["docker-bot", "tg_docker_bot"]:
+                    logging.info(f"⏭ Пропуск контейнера бота: {container.name}")
+                    continue
+
+                logging.info(f"▶️ Запуск: {container.name}")
+
+                try:
+                    container.start()
+                except Exception as e:
+                    logging.error(f"Ошибка при запуске {container.name}: {e}")
+
+                await asyncio.sleep(1)
+
+            return True
+
+        except Exception as e:
+            logging.error(f"Критическая ошибка start_all: {e}")
+            return False
+
+
+
 
     # перезапуск всех контейнеров
     async def restart_all_containers(self):
@@ -332,17 +390,24 @@ class DockerBot:
     async def show_containers(self, query):
         """Display the list of containers including status, image, and uptime."""
         if not self.docker_client:
-            await query.edit_message_text("❌ Docker клиент недоступен для управления контейнерами.", parse_mode='HTML', disable_web_page_preview=True)
+            await query.edit_message_text(
+                "❌ Docker клиент недоступен для управления контейнерами.",
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
             return await self.start_menu(query)
 
         containers = await self.get_containers()
 
         if not containers:
-            await query.edit_message_text("📋 Контейнеры не найдены", parse_mode='HTML', disable_web_page_preview=True)
+            await query.edit_message_text(
+                "📋 Контейнеры не найдены",
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
             return
 
         message = "📋 <b>Список контейнеров:</b>\n\n"
-        keyboard = []
 
         for container in containers:
             status = container['status']
@@ -351,33 +416,46 @@ class DockerBot:
             status_emoji = "🟢" if status == 'running' else "🔴"
 
             uptime_str = "N/A"
-            if status == 'running' and started_at: uptime_str = self._format_uptime(started_at)
-            
+            if status == 'running' and started_at:
+                uptime_str = self._format_uptime(started_at)
+
             escaped_name = self._escape_html(container['name'])
             escaped_image = self._escape_html(container['image'])
-            
+
             message += f"{status_emoji} <code>{escaped_name}</code>\n"
             message += f"    Статус: {status}\n"
             message += f"    Образ: {escaped_image}\n"
             message += f"    Время работы: {uptime_str}\n\n"
 
-            keyboard.append([
+        # ========== КНОПКИ ДЛЯ КАЖДОГО КОНТЕЙНЕРА ==========
+        container_buttons = [
+            [
                 InlineKeyboardButton(
-                    f"{'⏹️' if status == 'running' else '▶️'} {container['name']}",
-                    callback_data=f"container_{container['name']}"
+                    f"{c['name']}    {'▶️' if c['status'] != 'running' else '⛔'} ",
+                    callback_data=f"container_{c['name']}"
                 )
-            ])
+            ]
+            for c in containers
+        ]
 
-        # ⬇️ ДОБАВЛЕНА КНОПКА: Перезапустить ВСЕ
-        keyboard.append([
-            InlineKeyboardButton("🔄 Перезапустить ВСЕ", callback_data="action_restart_all")
-        ])
+        # ========== КНОПКИ ДЛЯ ВСЕХ КОНТЕЙНЕРОВ ==========
+        action_buttons = [
+            [InlineKeyboardButton("🔄 Перезапустить все", callback_data="action_restart_all")],
+            [InlineKeyboardButton("⛔ Остановить все", callback_data="action_stop_all")],
+            [InlineKeyboardButton("▶️ Запустить все", callback_data="action_start_all")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back")]
+        ]
 
-        # ⬇️ ИСПРАВЛЕНИЕ 2: Удалена кнопка "Зашифровать архив" из списка контейнеров
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        # ========== ОБЪЕДИНЕНИЕ ==========
+        keyboard = container_buttons + action_buttons
 
-        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML', disable_web_page_preview=True)
+        await query.edit_message_text(
+            message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML',
+            disable_web_page_preview=True
+        )
+
 
 
     async def show_container_info(self, query, container_name: Optional[str] = None):
@@ -408,7 +486,7 @@ class DockerBot:
             keyboard = []
 
             if status == 'running':
-                keyboard.append([InlineKeyboardButton("⏹️ Остановить", callback_data=f"action_stop_{container_name}")])
+                keyboard.append([InlineKeyboardButton("⛔ Остановить", callback_data=f"action_stop_{container_name}")])
                 keyboard.append([InlineKeyboardButton("🔄 Перезапустить", callback_data=f"action_restart_{container_name}")])
             else:
                 keyboard.append([InlineKeyboardButton("▶️ Запустить", callback_data=f"action_start_{container_name}")])
@@ -441,8 +519,27 @@ class DockerBot:
             msg = "✅ Все контейнеры успешно перезапущены." if success else "❌ Ошибка при перезапуске ВСЕХ контейнеров."
 
             await query.edit_message_text(msg, parse_mode='HTML')
-            await asyncio.sleep(1)
+            await asyncio.sleep(5)
             return await self.show_containers(query)
+
+        # остановка всех контейнеров
+        if query.data == "action_stop_all":
+            await query.edit_message_text("⏳ Останавливаю ВСЕ контейнеры...", parse_mode='HTML')
+            success = await self.stop_all_containers()
+            msg = "⛔ Все контейнеры остановлены." if success else "❌ Ошибка при остановке контейнеров."
+            await query.edit_message_text(msg, parse_mode='HTML')
+            await asyncio.sleep(5)
+            return await self.show_containers(query)
+
+        # запуск всех контейнеров
+        if query.data == "action_start_all":
+            await query.edit_message_text("⏳ Запускаю ВСЕ контейнеры...", parse_mode='HTML')
+            success = await self.start_all_containers()
+            msg = "▶️ Все контейнеры запущены." if success else "❌ Ошибка при запуске контейнеров."
+            await query.edit_message_text(msg, parse_mode='HTML')
+            await asyncio.sleep(5)
+            return await self.show_containers(query)
+
 
         # Разбиваем на максимум 2 части: action_<остальное>
         parts = data.split("_", 1)
@@ -513,7 +610,7 @@ class DockerBot:
         await query.edit_message_text(msg, parse_mode='HTML')
 
         # Возврат к меню контейнера
-        await asyncio.sleep(1)
+        await asyncio.sleep(5)
         await self.show_container_info(query, container_name)
 
 
