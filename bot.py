@@ -19,6 +19,7 @@ import pytz
 # Настройка логирования в начале файла (должна быть)
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(processName)s - %(name)s - %(levelname)s - %(message)s')
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 # ИМПОРТИРУЙТЕ ВАШУ ЛОГИКУ ШИФРОВАНИЯ
@@ -132,7 +133,38 @@ class DockerBot:
 
         return output_file, iterations
 
+
+
     # --- Docker-функции (не изменены) ---
+
+    # перезапуск всех контейнеров
+    async def restart_all_containers(self):
+        """Перезапускает все контейнеры, кроме контейнера самого бота."""
+        if not self.docker_client:
+            return False
+        try:
+            containers = self.docker_client.containers.list(all=True)
+            container_names = [c.name for c in containers]
+
+            logging.info(f"⏳ Запущена перезагрузка всех контейнеров: {', '.join(container_names)}")
+
+            for container in containers:
+                # ❗️ НЕ перезапускаем контейнер бота, иначе код остановится
+                if container.name in ["docker-bot", "tg_docker_bot"]:
+                    logging.info(f"⏭ Пропуск контейнера бота: {container.name}")
+                    continue
+
+                logging.info(f"🔄 Перезапуск контейнера: {container.name}")
+                container.restart()
+                await asyncio.sleep(1)  # небольшая задержка для стабильности
+
+            logging.info("✅ Все контейнеры успешно перезапущены.")
+            return True
+
+        except Exception as e:
+            logging.error(f"❌ Критическая ошибка при перезапуске всех контейнеров: {e}")
+            return False
+
 
     async def get_containers(self):
         if not self.docker_client: return []
@@ -300,13 +332,13 @@ class DockerBot:
     async def show_containers(self, query):
         """Display the list of containers including status, image, and uptime."""
         if not self.docker_client:
-            await query.edit_message_text("❌ Docker клиент недоступен для управления контейнерами.", parse_mode='HTML')
+            await query.edit_message_text("❌ Docker клиент недоступен для управления контейнерами.", parse_mode='HTML', disable_web_page_preview=True)
             return await self.start_menu(query)
 
         containers = await self.get_containers()
 
         if not containers:
-            await query.edit_message_text("📋 Контейнеры не найдены", parse_mode='HTML')
+            await query.edit_message_text("📋 Контейнеры не найдены", parse_mode='HTML', disable_web_page_preview=True)
             return
 
         message = "📋 <b>Список контейнеров:</b>\n\n"
@@ -336,11 +368,16 @@ class DockerBot:
                 )
             ])
 
+        # ⬇️ ДОБАВЛЕНА КНОПКА: Перезапустить ВСЕ
+        keyboard.append([
+            InlineKeyboardButton("🔄 Перезапустить ВСЕ", callback_data="action_restart_all")
+        ])
+
         # ⬇️ ИСПРАВЛЕНИЕ 2: Удалена кнопка "Зашифровать архив" из списка контейнеров
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML')
+        await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML', disable_web_page_preview=True)
 
 
     async def show_container_info(self, query, container_name: Optional[str] = None):
@@ -351,7 +388,7 @@ class DockerBot:
         if not container_name:
             try: container_name = query.data.split("_", 1)[1]
             except IndexError:
-                await query.edit_message_text("❌ Ошибка: Неверный формат данных для контейнера.", parse_mode='HTML')
+                await query.edit_message_text("❌ Ошибка: Неверный формат данных для контейнера.", parse_mode='HTML', disable_web_page_preview=True)
                 return
 
         try:
@@ -380,57 +417,104 @@ class DockerBot:
             keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="list")])
 
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML')
+            await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML', disable_web_page_preview=True)
         except docker.errors.NotFound:
-             await query.edit_message_text(f"❌ Ошибка: Контейнер с именем <code>{self._escape_html(container_name)}</code> не найден.", parse_mode='HTML')
+             await query.edit_message_text(f"❌ Ошибка: Контейнер с именем <code>{self._escape_html(container_name)}</code> не найден.", parse_mode='HTML', disable_web_page_preview=True)
         except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка при получении информации о контейнере: {self._escape_html(e)}", parse_mode='HTML')
+            await query.edit_message_text(f"❌ Ошибка при получении информации о контейнере: {self._escape_html(e)}", parse_mode='HTML', disable_web_page_preview=True)
 
 
     async def handle_action(self, query):
         """Обработка действий с контейнерами"""
-        if not self.docker_client: return await self.start_menu(query)
-        
-        data = query.data.split("_")
-        action = data[1]
-        container_name = "_".join(data[2:])
+        if not self.docker_client:
+            return await self.start_menu(query)
+
+        data = query.data
+
+        if data == "action_restart_all":
+            await query.edit_message_text(
+                "⏳ Запущена процедура перезапуска ВСЕХ контейнеров...",
+                parse_mode='HTML'
+            )
+
+            success = await self.restart_all_containers()
+            msg = "✅ Все контейнеры успешно перезапущены." if success else "❌ Ошибка при перезапуске ВСЕХ контейнеров."
+
+            await query.edit_message_text(msg, parse_mode='HTML')
+            await asyncio.sleep(1)
+            return await self.show_containers(query)
+
+        # Разбиваем на максимум 2 части: action_<остальное>
+        parts = data.split("_", 1)
+
+        if len(parts) != 2 or parts[0] != "action":
+            await query.edit_message_text(
+                "❌ Ошибка: неверный формат callback_data.",
+                parse_mode='HTML'
+            )
+            return
+
+        action_full = parts[1]
+
+
+        # Разделяем действие и имя контейнера
+        try:
+            action, container_name = action_full.split("_", 1)
+        except ValueError:
+            await query.edit_message_text(
+                f"❌ Ошибка: не удалось разобрать данные: <code>{self._escape_html(action_full)}</code>",
+                parse_mode='HTML'
+            )
+            return
+
         escaped_name = self._escape_html(container_name)
 
+        # ----------------------
+        # Старт контейнера
+        # ----------------------
         if action == "start":
             success = await self.start_container(container_name)
-            if success: await query.edit_message_text(f"✅ Контейнер <code>{escaped_name}</code> запущен", parse_mode='HTML')
-            else: await query.edit_message_text(f"❌ Ошибка при запуске контейнера <code>{escaped_name}</code>", parse_mode='HTML')
+            msg = f"▶️ Контейнер <code>{escaped_name}</code> запущен" if success \
+                else f"❌ Ошибка при запуске контейнера <code>{escaped_name}</code>"
+
+        # ----------------------
+        # Стоп контейнера
+        # ----------------------
         elif action == "stop":
             success = await self.stop_container(container_name)
-            if success: await query.edit_message_text(f"⏹️ Контейнер <code>{escaped_name}</code> остановлен", parse_mode='HTML')
-            else: await query.edit_message_text(f"❌ Ошибка при остановке контейнера <code>{escaped_name}</code>", parse_mode='HTML')
+            msg = f"⏹️ Контейнер <code>{escaped_name}</code> остановлен" if success \
+                else f"❌ Ошибка при остановке контейнера <code>{escaped_name}</code>"
+
+        # ----------------------
+        # Перезапуск контейнера
+        # ----------------------
         elif action == "restart":
             success = await self.restart_container(container_name)
-            if success: await query.edit_message_text(f"🔄 Контейнер <code>{escaped_name}</code> перезапущен", parse_mode='HTML')
-            else: await query.edit_message_text(f"❌ Ошибка при перезапуске контейнера <code>{escaped_name}</code>", parse_mode='HTML')
+            msg = f"🔄 Контейнер <code>{escaped_name}</code> перезапущен" if success \
+                else f"❌ Ошибка при перезапуске контейнера <code>{escaped_name}</code>"
+
+        # ----------------------
+        # Логи контейнера
+        # ----------------------
         elif action == "logs":
             logs = await self.get_container_logs(container_name, 20)
-            
-            if len(logs) > 3000: logs = logs[-3000:] + "\n\n... (показаны последние 20 строк)"
-
+            logs = (logs[-3000:] + "\n\n...") if len(logs) > 3000 else logs
             escaped_logs = self._escape_html(logs)
-            message = f"📝 <b>Логи <code>{escaped_name}</code>:</b>\n\n<pre>{escaped_logs}</pre>"
-            
-            # Кнопка "Назад" ведет обратно в меню контейнера
+
+            msg = f"📝 <b>Логи <code>{escaped_name}</code>:</b>\n\n<pre>{escaped_logs}</pre>"
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"container_{container_name}")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+            return
 
-            await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML')
-        
-        # ⬇️ ИСПРАВЛЕНИЕ 1 (часть 1): Возвращаемся в меню контейнера после управления
-        if action in ["start", "stop", "restart"]:
-            await asyncio.sleep(1) # Ждем, пока Docker обновит статус
-            # Вызываем show_container_info с именем контейнера
-            await self.show_container_info(query, container_name)
-        
-        # ВНИМАНИЕ: Старый код, вызывающий self.start_menu(query), удален.
+        else:
+            msg = f"❌ Неизвестное действие: <code>{self._escape_html(action)}</code>"
 
+        # Выводим сообщение
+        await query.edit_message_text(msg, parse_mode='HTML')
 
+        # Возврат к меню контейнера
+        await asyncio.sleep(1)
+        await self.show_container_info(query, container_name)
 
 
     async def scheduled_encrypt_and_send(self, bot):
